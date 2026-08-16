@@ -78,20 +78,33 @@
     </div>
 
     <div class="col-md-6 help-item">
-        <div class="card shadow-sm h-100">
-            <div class="card-body">
+        <a href="{{ route('ai.assistant') }}" class="text-decoration-none text-dark d-block h-100">
+            <div class="card shadow-sm h-100 border-2 border-danger-subtle hover-shadow-lg" style="transition: all 0.3s ease; cursor: pointer; border-left: 5px solid #dc3545;">
+                <div class="card-body d-flex flex-column justify-content-between">
+                    <div>
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <h5 class="fw-bold mb-0 text-danger">
+                                <i class="fa-solid fa-robot text-danger me-2"></i>
+                                Trợ Lý AI Tìm Việc
+                            </h5>
+                            <span class="badge bg-danger-subtle text-danger rounded-pill px-3 py-1 fw-bold">
+                                ✨ Mới & Nổi Bật
+                            </span>
+                        </div>
 
-                <h5 class="fw-bold">
-                    <i class="fa-solid fa-robot text-danger me-2"></i>
-                    Trợ Lý AI
-                </h5>
+                        <p class="text-muted mt-2">
+                            Trò chuyện cùng AI thông minh để nhận gợi ý việc làm chuẩn xác dựa theo vị trí, mức lương, nơi làm việc từ dữ liệu hệ thống.
+                        </p>
+                    </div>
 
-                <p class="text-muted">
-                    Sử dụng AI để tối ưu CV và nhận gợi ý công việc phù hợp.
-                </p>
-
+                    <div class="mt-3">
+                        <span class="btn btn-sm btn-outline-danger rounded-pill px-3 fw-bold">
+                            Mở Trợ Lý AI <i class="fa-solid fa-arrow-right ms-1"></i>
+                        </span>
+                    </div>
+                </div>
             </div>
-        </div>
+        </a>
     </div>
 
 </div>

@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\AiAssistantController;
 use App\Http\Controllers\MatchingController;
 use App\Http\Controllers\ApplicantController;
 use App\Http\Controllers\DashboardController;
@@ -163,15 +164,19 @@ Route::middleware(['auth'])->group(function () {
 
 /*
 |--------------------------------------------------------------------------
-| AI Job Suggestion
+| AI Job Suggestion & Assistant
 |--------------------------------------------------------------------------
 */
+
+Route::get('/assistant', [AiAssistantController::class, 'index'])->name('ai.assistant');
+Route::post('/assistant/chat', [AiAssistantController::class, 'chat'])->name('ai.assistant.chat');
 
 Route::middleware(['auth'])->group(function () {
 
     Route::get('/suggest', [SuggestController::class, 'index'])->name('suggest.index');
     Route::post('/suggest', [SuggestController::class, 'suggest'])->name('suggest');
 });
+
 
 /*
 |--------------------------------------------------------------------------
