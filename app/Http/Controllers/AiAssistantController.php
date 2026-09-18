@@ -11,11 +11,21 @@ use Illuminate\Support\Facades\Log;
 class AiAssistantController extends Controller
 {
     /**
-     * Hiển thị trang giao diện Trợ Lý AI
+     * Hiển thị trang giao diện Trợ Lý AI với dữ liệu khởi tạo từ database
      */
     public function index()
     {
-        return view('assistant');
+        $allListings = Listing::with(['profile', 'skills'])->latest()->get();
+
+        $initialJobs = $allListings->map(function ($job) {
+            return $this->formatJobData($job, 100);
+        });
+
+        $suggestedTitles = $allListings->pluck('job_title')->filter()->unique()->values()->all();
+        $suggestedLocations = $allListings->pluck('address')->filter()->unique()->values()->all();
+        $suggestedJobTypes = $allListings->pluck('job_type')->filter()->unique()->values()->all();
+
+        return view('assistant', compact('initialJobs', 'suggestedTitles', 'suggestedLocations', 'suggestedJobTypes'));
     }
 
     /**
@@ -104,234 +114,252 @@ class AiAssistantController extends Controller
             $apiKey = config('services.gemini.api_key') ?: env('GEMINI_API_KEY');
             $model = config('services.gemini.model') ?: 'gemini-2.5-flash';
 
-            if (!$apiKey) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Thiếu cấu hình GEMINI_API_KEY trên máy chủ'
-                ], 500);
-            }
+            // Lấy danh sách việc làm thực tế từ bảng listings
+            $allListings = Listing::with(['profile', 'skills'])->latest()->get();
 
-            // System prompt hướng dẫn Gemini NLU phân tích tiêu chí tìm việc
+            // Tổng hợp thông tin các công việc hiện có trong CSDL để nạp vào prompt cho Gemini
+            $dbJobSummaries = $allListings->map(function ($l) {
+                $sal = is_numeric($l->salary) ? number_format((float)$l->salary, 0, ',', '.') . ' VNĐ' : ($l->salary ?: 'Thỏa thuận');
+                return "- ID: {$l->id} | Vị trí (job_title): '{$l->job_title}' | Mức lương (salary): '{$sal}' | Địa điểm (address): '{$l->address}' | Hình thức (job_type): '{$l->job_type}' | Mô tả: '{$l->predes}'";
+            })->implode("\n");
+
+            // System prompt hướng dẫn Gemini NLU phân tích dựa trên CSDL thực tế
             $systemPrompt = <<<PROMPT
-Bạn là Trợ lý AI Tìm Việc Thông Minh (AI Job Assistant) của nền tảng tuyển dụng "JOB SEARCH". Nhiệm vụ của bạn là lắng nghe, trò chuyện thân thiện và hỗ trợ ứng viên tìm kiếm công việc phù hợp nhất từ cơ sở dữ liệu việc làm.
+Bạn là Trợ lý AI Tìm Việc Thông Minh (AI Job Assistant) của nền tảng tuyển dụng "JOB SEARCH".
+Nhiệm vụ của bạn là lắng nghe, trò chuyện thân thiện và hỗ trợ ứng viên tìm kiếm công việc phù hợp nhất DỰA VÀO CƠ SỞ DỮ LIỆU THỰC TẾ (bảng listings) CỦA HỆ THỐNG.
 
-Để gợi ý công việc chính xác nhất, bạn CẦN THU THẬP các thông tin sau từ người dùng:
-1. Vị trí công việc hoặc chuyên môn mong muốn (position) - Ví dụ: Lập trình viên Laravel, Frontend ReactJS, Kế toán, Nhân viên Marketing, v.v.
-2. Nơi làm việc / Địa điểm mong muốn (location) - Ví dụ: Hà Nội, Hải Phòng, TP.HCM, Đà Nẵng, Toàn quốc, v.v.
-3. Mức lương kỳ vọng (salary) tính theo VNĐ/tháng - Ví dụ: 10000000, 15000000, 20000000 (chuyển đổi nếu người dùng nói "10 triệu", "15tr", hoặc để 0 nếu thỏa thuận).
-4. Hình thức làm việc (job_type) - Ví dụ: Full-time, Part-time, Remote, Thực tập (tùy chọn nếu người dùng nhắc đến).
+=== DANH SÁCH CÔNG VIỆC THỰC TẾ ĐANG CÓ TRONG CƠ SỞ DỮ LIỆU (BẢNG LISTINGS) ===
+{$dbJobSummaries}
+================================================================================
 
-Quy trình xử lý:
-- Phân tích tin nhắn mới nhất và toàn bộ lịch sử trò chuyện.
-- Nếu người dùng CHƯA CUNG CẤP ĐỦ các thông tin cơ bản (ít nhất là vị trí công việc và địa điểm hoặc mức lương):
-  + Trả về JSON có status là "pending".
-  + Đặt câu hỏi tiếp theo một cách ngắn gọn, ấm áp, tự nhiên bằng tiếng Việt để hỏi phần thông tin còn thiếu.
-  + Cung cấp 3-5 lựa chọn nhanh (quick_replies) thật súc tích (dưới 20 ký tự mỗi lựa chọn) để người dùng bấm chọn dễ dàng.
-- Nếu người dùng ĐÃ CUNG CẤP ĐỦ hoặc tương đối đầy đủ thông tin tìm việc:
-  + Trả về JSON có status là "complete".
-  + Trích xuất rõ: position (chuỗi), salary (số nguyên VNĐ hoặc null), location (chuỗi), job_type (chuỗi hoặc null).
-  + Tạo lời nhắn tổng kết động viên trong "ai_message" (ví dụ: "Dạ tuyệt vời! Tôi đã ghi nhận mong muốn tìm vị trí [position] tại [location] với mức lương từ [salary]. Dưới đây là những cơ hội việc làm tốt nhất trong hệ thống phù hợp với bạn...").
-  + Tạo danh sách từ khóa tìm kiếm tiếng Việt ngắn gọn trong "keywords" (ví dụ: ["laravel", "php", "backend", "mysql"]).
-  + Cung cấp 2-3 gợi ý thao tác tiếp theo trong "quick_replies" (ví dụ: ["Xem việc Full-time", "Tìm thêm tại TP.HCM", "Mức lương cao hơn"]).
+4 TIÊU CHÍ VIỆC LÀM TƯƠNG ỨNG TRONG BẢNG LISTINGS:
+1. Vị trí công việc: trường `job_title`
+2. Mức lương: trường `salary`
+3. Địa điểm / Nơi làm việc: trường `address`
+4. Hình thức làm việc: trường `job_type`
 
-ĐỊNH DẠNG BẮT BUỘC: Bạn CHỈ ĐƯỢC trả về DUY NHẤT một chuỗi JSON hợp lệ, KHÔNG có markdown hay ký tự bao bọc bên ngoài.
+QUY TẮC XỬ LÝ:
+1. Phân tích tin nhắn mới nhất và lịch sử trò chuyện.
+2. Trích xuất các tiêu chí của người dùng:
+   - position: Vị trí người dùng mong muốn (ví dụ: "Frontend Developer", "chụp ảnh", v.v.) hoặc null.
+   - location: Nơi làm việc người dùng mong muốn (ví dụ: "an dong", "Hải Phòng", v.v.) hoặc null.
+   - salary: Mức lương mong muốn hoặc null.
+   - job_type: Hình thức ("Fulltime", "Parttime", "Từ Xa", v.v.) hoặc null.
+   - matched_job_ids: Mảng chứa các ID công việc trong danh sách trên khớp nhất với yêu cầu của người dùng (Ví dụ: [36] nếu người dùng tìm Frontend, [35] nếu tìm chụp ảnh, [39] nếu tìm thể thao). Nếu người dùng hỏi chung hoặc chưa nêu vị trí cụ thể, trả về các ID công việc tiêu biểu.
+3. Trong "ai_message":
+   - Luôn trả lời bằng tiếng Việt thân thiện, rõ ràng, nhiệt tình.
+   - Nêu rõ các thông tin công việc từ CSDL: vị trí (job_title), mức lương (salary), địa điểm (address) và hình thức (job_type).
+4. Trong "quick_replies":
+   - Đưa ra 3-5 lựa chọn nhanh dựa CHÍNH XÁC trên các công việc thực tế trong CSDL (ví dụ: "Frontend Developer", "Chụp ảnh cưới", "Thể thao 24h", "Fulltime", "Parttime", "An Đồng").
+5. ĐỊNH DẠNG BẮT BUỘC: Bạn CHỈ ĐƯỢC trả về DUY NHẤT một chuỗi JSON hợp lệ, KHÔNG có markdown hay ký tự bao bọc bên ngoài.
 
-Ví dụ JSON khi CHƯA ĐỦ THÔNG TIN:
-{
-  "status": "pending",
-  "position": "Lập trình viên PHP",
-  "location": null,
-  "salary": null,
-  "job_type": null,
-  "ai_message": "Chào bạn! Tôi rất vui được hỗ trợ bạn tìm kiếm công việc Lập trình viên PHP. Bạn mong muốn làm việc tại tỉnh/thành phố nào và có mức lương kỳ vọng ra sao?",
-  "quick_replies": ["Hà Nội", "Hải Phòng", "TP. Hồ Chí Minh", "Làm việc từ xa (Remote)"]
-}
-
-Ví dụ JSON khi ĐÃ ĐỦ THÔNG TIN:
+Ví dụ JSON trả về:
 {
   "status": "complete",
-  "position": "Lập trình viên Laravel",
-  "location": "Hà Nội",
-  "salary": 15000000,
-  "job_type": "Full-time",
-  "keywords": ["laravel", "php", "backend", "mysql"],
-  "ai_message": "Tuyệt vời! Tôi đã tìm kiếm và chọn lọc các vị trí Lập trình viên Laravel tại khu vực Hà Nội với mức thu nhập hấp dẫn phù hợp với bạn bên dưới!",
-  "quick_replies": ["Việc lương cao hơn", "Công việc Remote", "Đổi khu vực khác"]
+  "position": "Frontend Developer",
+  "location": "an dong",
+  "salary": "3.000 VNĐ",
+  "job_type": "Fulltime",
+  "matched_job_ids": [36],
+  "ai_message": "Dạ tuyệt vời! Trong hệ thống đang có vị trí 'Frontend Developer' tại khu vực An Đồng, hình thức Fulltime với mức lương 3.000 VNĐ đang tuyển dụng. Tôi đã hiển thị chi tiết công việc này ngay bên bảng kết quả để bạn xem và ứng tuyển ngay nhé!",
+  "quick_replies": ["Xem việc Fulltime khác", "Việc tại An Đồng", "Tìm việc Parttime"]
 }
 PROMPT;
 
-            $geminiUrl = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key={$apiKey}";
+            $geminiText = '';
+            $parsed = null;
 
-            $response = $this->callGeminiWithRetry($geminiUrl, [
-                'contents' => $messages,
-                'systemInstruction' => [
-                    'parts' => [
-                        ['text' => $systemPrompt]
+            if ($apiKey) {
+                $geminiUrl = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key={$apiKey}";
+
+                $response = $this->callGeminiWithRetry($geminiUrl, [
+                    'contents' => $messages,
+                    'systemInstruction' => [
+                        'parts' => [
+                            ['text' => $systemPrompt]
+                        ]
+                    ],
+                    'generationConfig' => [
+                        'responseMimeType' => 'application/json',
+                        'temperature' => 0.2
                     ]
-                ],
-                'generationConfig' => [
-                    'responseMimeType' => 'application/json',
-                    'temperature' => 0.3
-                ]
-            ]);
-
-            if (!$response || !$response->successful()) {
-                $status = $response ? $response->status() : 500;
-                Log::error("Gemini API Error status {$status}: " . ($response ? $response->body() : 'No response'));
-
-                return response()->json([
-                    'success' => true,
-                    'status' => 'pending',
-                    'ai_message' => 'Dạ hệ thống AI đang nhận được nhiều yêu cầu cùng lúc. Bạn có thể cho tôi biết bạn đang tìm vị trí công việc gì, ở khu vực nào và mức lương kỳ vọng nhé!',
-                    'quick_replies' => ['Lập trình viên Laravel', 'Frontend ReactJS', 'Nhân viên Kinh doanh', 'Hà Nội', 'Hải Phòng']
                 ]);
+
+                if ($response && $response->successful()) {
+                    $geminiBody = $response->json();
+                    $geminiText = $geminiBody['candidates'][0]['content']['parts'][0]['text'] ?? '';
+                    if (!empty($geminiText)) {
+                        $parsed = json_decode(trim($geminiText), true);
+                    }
+                } else {
+                    Log::warning("Gemini API call failed or rate limited. Falling back to local search.");
+                }
             }
 
-            $geminiBody = $response->json();
-            $geminiText = $geminiBody['candidates'][0]['content']['parts'][0]['text'] ?? '';
-
-            if (empty($geminiText)) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Không nhận được nội dung phản hồi từ AI'
-                ], 500);
+            // Lấy tin nhắn người dùng mới nhất để tăng cường trích xuất từ khóa
+            $lastUserMessage = '';
+            for ($i = count($messages) - 1; $i >= 0; $i--) {
+                if (($messages[$i]['role'] ?? '') === 'user') {
+                    $lastUserMessage = $messages[$i]['parts'][0]['text'] ?? '';
+                    break;
+                }
             }
 
-            // Parse JSON trả về từ Gemini
-            $parsed = json_decode(trim($geminiText), true);
-            if (!is_array($parsed)) {
-                Log::warning("Gemini Invalid JSON output: " . $geminiText);
-                return response()->json([
-                    'success' => true,
-                    'status' => 'pending',
-                    'ai_message' => 'Bạn muốn tìm công việc ở vị trí nào và tại địa điểm nào ạ?',
-                    'quick_replies' => ['Lập trình viên', 'Kế toán', 'Hà Nội', 'TP.HCM']
-                ]);
-            }
-
-            $status = $parsed['status'] ?? 'pending';
+            // Trích xuất các tiêu chí
+            $status = $parsed['status'] ?? 'complete';
             $position = $parsed['position'] ?? null;
             $location = $parsed['location'] ?? null;
-            $salary = isset($parsed['salary']) && is_numeric($parsed['salary']) ? (int)$parsed['salary'] : null;
+            $salary = $parsed['salary'] ?? null;
             $jobType = $parsed['job_type'] ?? null;
-            $keywords = $parsed['keywords'] ?? [];
-            $aiMessage = $parsed['ai_message'] ?? 'Tôi đã tiếp nhận thông tin của bạn.';
+            $matchedJobIds = $parsed['matched_job_ids'] ?? [];
+            $aiMessage = $parsed['ai_message'] ?? null;
             $quickReplies = $parsed['quick_replies'] ?? [];
 
-            // Truy vấn danh sách việc làm từ database
-            $allListings = Listing::with(['profile', 'skills'])->latest()->get();
+            // Nếu không có tin nhắn AI từ Gemini, tự tạo phản hồi thông minh dựa trên CSDL
+            if (empty($aiMessage)) {
+                $aiMessage = "Tôi đã tìm kiếm các cơ hội việc làm trong hệ thống theo yêu cầu của bạn. Dưới đây là danh sách việc làm phù hợp nhất!";
+            }
 
-            $matchedJobs = [];
-            $alternativeJobs = [];
+            // Nếu không có quick replies, tạo từ dữ liệu thực tế
+            if (empty($quickReplies)) {
+                $quickReplies = $allListings->pluck('job_title')->filter()->take(4)->values()->all();
+            }
 
-            if (!empty($position) || !empty($location) || !empty($salary) || !empty($keywords)) {
-                $positionTokens = $this->getTokens($position);
-                $locationTokens = $this->getTokens($location);
-                $keywordTokens = [];
-                foreach ($keywords as $kw) {
-                    $keywordTokens = array_merge($keywordTokens, $this->getTokens($kw));
+            // =========================================================================
+            // THUẬT TOÁN CHẤM ĐIỂM & SO KHỚP CÔNG VIỆC CHÍNH XÁC VỚI BẢNG LISTINGS
+            // Các trường kiểm tra: job_title, salary, address, job_type
+            // =========================================================================
+            $positionTokens = array_merge(
+                $this->getTokens($position),
+                $this->getTokens($lastUserMessage)
+            );
+            $positionTokens = array_unique(array_filter($positionTokens));
+
+            $locationTokens = $this->getTokens($location);
+            $jobTypeTokens = $this->getTokens($jobType);
+
+            $scoredJobs = [];
+
+            foreach ($allListings as $job) {
+                $score = 0;
+                $jobTitleNorm = $this->normalizeText($job->job_title);
+                $jobDescNorm = $this->normalizeText($job->description . ' ' . $job->predes . ' ' . $job->roles);
+                $jobAddressNorm = $this->normalizeText($job->address);
+                $jobTypeNorm = $this->normalizeText($job->job_type);
+
+                // Ưu tiên 1: Gemini đã xác định cụ thể ID việc làm này (+50 điểm)
+                if (in_array($job->id, $matchedJobIds)) {
+                    $score += 50;
                 }
-                $keywordTokens = array_unique(array_filter($keywordTokens));
 
-                $scoredJobs = [];
-
-                foreach ($allListings as $job) {
-                    $score = 0;
-                    $jobTitleNorm = $this->normalizeText($job->title);
-                    $jobDescNorm = $this->normalizeText($job->description . ' ' . $job->predes . ' ' . $job->roles);
-                    $jobAddressNorm = $this->normalizeText($job->address);
-                    $jobTypeNorm = $this->normalizeText($job->job_type);
-
-                    // 1. So khớp Tiêu đề & Vị trí (Trọng số lớn: 40đ)
-                    $titleMatched = false;
-                    foreach ($positionTokens as $token) {
-                        if (str_contains($jobTitleNorm, $token)) {
-                            $score += 30;
-                            $titleMatched = true;
-                        } elseif (str_contains($jobDescNorm, $token)) {
-                            $score += 15;
-                            $titleMatched = true;
-                        }
-                    }
-
-                    // 2. So khớp Từ khóa kỹ năng (Trọng số: 25đ)
-                    foreach ($keywordTokens as $kwToken) {
-                        if (str_contains($jobTitleNorm, $kwToken)) {
-                            $score += 15;
-                        } elseif (str_contains($jobDescNorm, $kwToken)) {
-                            $score += 8;
-                        }
-                    }
-
-                    // 3. So khớp Địa điểm (Trọng số: 25đ)
-                    if (!empty($locationTokens)) {
-                        $locMatch = false;
-                        foreach ($locationTokens as $locToken) {
-                            if (str_contains($jobAddressNorm, $locToken)) {
-                                $score += 25;
-                                $locMatch = true;
-                                break;
-                            }
-                        }
-                    } else {
-                        $score += 10; // Không yêu cầu địa điểm cụ thể
-                    }
-
-                    // 4. So khớp Mức lương (Trọng số: 15đ)
-                    $jobSalaryNum = is_numeric($job->salary) ? (int)$job->salary : 0;
-                    if ($salary && $salary > 0) {
-                        if ($jobSalaryNum >= $salary) {
-                            $score += 15;
-                        } elseif ($jobSalaryNum >= ($salary * 0.7)) {
-                            $score += 8;
-                        } elseif ($jobSalaryNum == 0) { // Thỏa thuận
-                            $score += 5;
-                        }
-                    } else {
-                        $score += 10;
-                    }
-
-                    // 5. So khớp Hình thức làm việc (Trọng số: 10đ)
-                    if ($jobType) {
-                        $jobTypeInputNorm = $this->normalizeText($jobType);
-                        if (str_contains($jobTypeNorm, $jobTypeInputNorm) || str_contains($jobTypeInputNorm, $jobTypeNorm)) {
-                            $score += 10;
-                        }
-                    }
-
-                    if ($score > 15) {
-                        $scoredJobs[] = [
-                            'job' => $job,
-                            'score' => min(100, $score),
-                        ];
+                // Tiêu chí 1: Vị trí (job_title) - Trọng số cao nhất (+45 điểm)
+                $titleMatched = false;
+                foreach ($positionTokens as $token) {
+                    if (mb_strlen($token) < 2) continue;
+                    if (str_contains($jobTitleNorm, $token)) {
+                        $score += 35;
+                        $titleMatched = true;
+                    } elseif (str_contains($jobDescNorm, $token)) {
+                        $score += 15;
+                        $titleMatched = true;
                     }
                 }
 
-                // Sắp xếp theo điểm số giảm dần
-                usort($scoredJobs, function ($a, $b) {
-                    return $b['score'] <=> $a['score'];
-                });
+                // Tiêu chí 2: Địa điểm (address) (+25 điểm)
+                if (!empty($locationTokens)) {
+                    foreach ($locationTokens as $locToken) {
+                        if (str_contains($jobAddressNorm, $locToken) || str_contains($locToken, $jobAddressNorm)) {
+                            $score += 25;
+                            break;
+                        }
+                    }
+                } else {
+                    // Nếu người dùng nhắc đến địa điểm trong câu chat
+                    $chatTokens = $this->getTokens($lastUserMessage);
+                    foreach ($chatTokens as $cToken) {
+                        if (mb_strlen($cToken) >= 3 && str_contains($jobAddressNorm, $cToken)) {
+                            $score += 20;
+                            if (!$location) $location = $job->address;
+                            break;
+                        }
+                    }
+                }
 
-                // Tách thành danh sách chính và thay thế
-                $topScored = array_slice($scoredJobs, 0, 4);
-                $altScored = array_slice($scoredJobs, 4, 4);
+                // Tiêu chí 3: Hình thức (job_type) (+20 điểm)
+                if (!empty($jobTypeTokens)) {
+                    foreach ($jobTypeTokens as $jtToken) {
+                        if (str_contains($jobTypeNorm, $jtToken) || str_contains($jtToken, $jobTypeNorm)) {
+                            $score += 20;
+                            break;
+                        }
+                    }
+                } else {
+                    // Kiểm tra từ khóa hình thức trong câu chat
+                    $userTextNorm = $this->normalizeText($lastUserMessage);
+                    if (str_contains($userTextNorm, 'full') || str_contains($userTextNorm, 'toan thoi gian')) {
+                        if (str_contains($jobTypeNorm, 'full')) $score += 20;
+                    } elseif (str_contains($userTextNorm, 'part') || str_contains($userTextNorm, 'ban thoi gian')) {
+                        if (str_contains($jobTypeNorm, 'part')) $score += 20;
+                    }
+                }
 
-                $matchedJobs = array_map(function ($item) {
-                    return $this->formatJobData($item['job'], $item['score']);
-                }, $topScored);
+                // Tiêu chí 4: Mức lương (salary) (+10 điểm)
+                if ($salary) {
+                    $score += 10;
+                }
 
-                $alternativeJobs = array_map(function ($item) {
-                    return $this->formatJobData($item['job'], $item['score']);
-                }, $altScored);
+                $scoredJobs[] = [
+                    'job' => $job,
+                    'score' => $score,
+                    'titleMatched' => $titleMatched,
+                ];
             }
 
-            // Nếu không có job nào khớp sâu, lấy một số job nổi bật làm gợi ý thay thế
-            if (empty($matchedJobs) && empty($alternativeJobs)) {
-                $featured = $allListings->take(4);
-                $alternativeJobs = $featured->map(function ($job) {
-                    return $this->formatJobData($job, 75);
-                })->toArray();
+            // Sắp xếp danh sách việc làm theo điểm số giảm dần
+            usort($scoredJobs, function ($a, $b) {
+                return $b['score'] <=> $a['score'];
+            });
+
+            // Tách danh sách việc làm khớp (matched) và việc làm tham khảo (alternative)
+            $matched = [];
+            $alternatives = [];
+
+            // Kiểm tra xem người dùng có yêu cầu vị trí cụ thể không
+            $hasSpecificPosition = (!empty($position) && mb_strlen(trim($position)) > 1) || count($positionTokens) > 0;
+
+            foreach ($scoredJobs as $item) {
+                if ($hasSpecificPosition) {
+                    // Nếu người dùng tìm kiếm vị trí cụ thể: công việc phải khớp vị trí hoặc được Gemini chỉ định
+                    if ($item['titleMatched'] || in_array($item['job']->id, $matchedJobIds)) {
+                        $matched[] = $item;
+                    } else {
+                        $alternatives[] = $item;
+                    }
+                } else {
+                    // Nếu hỏi chung hoặc chỉ lọc theo địa điểm / hình thức
+                    if ($item['score'] >= 25) {
+                        $matched[] = $item;
+                    } else {
+                        $alternatives[] = $item;
+                    }
+                }
             }
+
+            // Nếu không có job nào khớp sâu, hiển thị các job nổi bật
+            if (empty($matched)) {
+                $matched = array_slice($scoredJobs, 0, 4);
+                $alternatives = array_slice($scoredJobs, 4);
+            }
+
+            $matchedJobs = array_map(function ($item) {
+                $calcScore = max(70, min(99, $item['score'] > 0 ? $item['score'] : 80));
+                return $this->formatJobData($item['job'], $calcScore);
+            }, $matched);
+
+            $alternativeJobs = array_map(function ($item) {
+                return $this->formatJobData($item['job'], 60);
+            }, array_slice($alternatives, 0, 4));
+
 
             return response()->json([
                 'success' => true,
@@ -356,11 +384,12 @@ PROMPT;
     }
 
     /**
-     * Định dạng dữ liệu job trả về cho giao diện Frontend
+     * Định dạng dữ liệu job trả về cho giao diện Frontend với đầy đủ thông tin từ bảng listings:
+     * job_title, salary, address, job_type, predes, description, v.v.
      */
     private function formatJobData($job, $matchScore = 85)
     {
-        $companyName = $job->profile ? ($job->profile->name ?? 'Nhà tuyển dụng') : 'Doanh nghiệp';
+        $companyName = $job->profile ? ($job->profile->name ?? 'Doanh nghiệp') : 'Doanh nghiệp';
         $companyAvatar = $job->profile && $job->profile->profile_pic 
             ? asset('storage/' . $job->profile->profile_pic)
             : asset('image/logo-jobsearch.png');
@@ -369,35 +398,32 @@ PROMPT;
             ? asset('storage/' . $job->feature_image)
             : null;
 
-        $salaryDisplay = 'Thỏa thuận';
-        if (is_numeric($job->salary) && (int)$job->salary > 0) {
-            $val = (int)$job->salary;
-            if ($val >= 1000000) {
-                $salaryDisplay = number_format($val / 1000000, 1) . ' Triệu';
-                $salaryDisplay = str_replace('.0 Triệu', ' Triệu', $salaryDisplay);
-            } else {
-                $salaryDisplay = number_format($val) . ' VNĐ';
-            }
-        } elseif (!empty($job->salary) && !is_numeric($job->salary)) {
-            $salaryDisplay = $job->salary;
+        // Định dạng mức lương giống chuẩn trong job/show.blade.php
+        if (is_numeric($job->salary) && (float) $job->salary > 0) {
+            $salaryDisplay = number_format((float) $job->salary, 0, ',', '.') . ' VNĐ';
+        } else {
+            $salaryDisplay = $job->salary ?: 'Thỏa thuận';
         }
+
+        $jobTitle = $job->job_title ?: ($job->title ?: 'Vị trí chưa cập nhật');
 
         return [
             'id' => $job->id,
-            'title' => $job->title,
+            'job_title' => $jobTitle,
+            'title' => $jobTitle,
             'slug' => $job->slug,
             'company_name' => $companyName,
             'company_avatar' => $companyAvatar,
             'feature_image' => $featureImg,
-            'address' => $job->address ?? 'Toàn quốc',
-            'job_type' => $job->job_type ?? 'Full-time',
+            'address' => $job->address ?: 'Chưa cập nhật địa điểm',
+            'job_type' => $job->job_type ?: 'Fulltime',
             'salary' => $salaryDisplay,
             'raw_salary' => $job->salary,
-            'predes' => $job->predes ?? '',
+            'predes' => $job->predes ?: '',
             'detail_url' => route('job.show', $job->slug),
             'apply_url' => route('job.show', $job->slug),
             'match_score' => $matchScore,
-            'close_date' => $job->application_close_date ? date('d/m/Y', strtotime($job->application_close_date)) : 'Đang tuyển',
+            'close_date' => $job->application_close_date ? date('d/m/Y', strtotime($job->application_close_date)) : 'Không giới hạn',
         ];
     }
 }

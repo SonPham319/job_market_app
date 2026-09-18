@@ -13,6 +13,7 @@ class Listing extends Model
 
     protected $fillable = [
         'user_id',
+        'job_title',
         'title',
         'predes',
         'description',
@@ -24,6 +25,12 @@ class Listing extends Model
         'feature_image',
         'slug'
     ];
+
+    public function getTitleAttribute()
+    {
+        return $this->attributes['job_title'] ?? ($this->attributes['title'] ?? null);
+    }
+
 
     public function users()
     {

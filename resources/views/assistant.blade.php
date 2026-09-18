@@ -299,6 +299,27 @@ document.addEventListener("DOMContentLoaded", function() {
 
     const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
 
+    // Server-provided initial data from database
+    const serverInitialJobs = @json($initialJobs ?? []);
+    const serverSuggestedTitles = @json($suggestedTitles ?? []);
+    const serverSuggestedLocations = @json($suggestedLocations ?? []);
+    const serverSuggestedJobTypes = @json($suggestedJobTypes ?? []);
+
+    // Build real initial quick replies from database
+    let initialQuickReplies = [];
+    if (serverSuggestedTitles && serverSuggestedTitles.length > 0) {
+        serverSuggestedTitles.slice(0, 3).forEach(t => initialQuickReplies.push(t));
+    }
+    if (serverSuggestedLocations && serverSuggestedLocations.length > 0) {
+        serverSuggestedLocations.slice(0, 2).forEach(l => initialQuickReplies.push(l));
+    }
+    if (serverSuggestedJobTypes && serverSuggestedJobTypes.length > 0) {
+        serverSuggestedJobTypes.slice(0, 2).forEach(j => initialQuickReplies.push(j));
+    }
+    if (initialQuickReplies.length === 0) {
+        initialQuickReplies = ['Frontend Developer', 'chup anh dam cuoi DUC PHUC', 'the thao 24h', 'an dong', 'Fulltime'];
+    }
+
     // Conversation state
     let conversationHistory = [];
     let criteriaState = {
@@ -311,15 +332,8 @@ document.addEventListener("DOMContentLoaded", function() {
     // Initial greeting
     const initialGreeting = {
         sender: 'ai',
-        text: 'Xin chào bạn! Tôi là Trợ Lý AI Tìm Việc của JOB SEARCH. Tôi ở đây để hỗ trợ bạn kết nối với những công việc chất lượng và phù hợp nhất từ cơ sở dữ liệu hệ thống.\n\nBạn đang muốn tìm kiếm vị trí công việc nào (hoặc lĩnh vực/kỹ năng gì) thế ạ?',
-        quickReplies: [
-            'Lập trình viên Laravel',
-            'Frontend ReactJS',
-            'Nhân viên Kinh doanh',
-            'Kế toán tổng hợp',
-            'Hà Nội',
-            'Hải Phòng'
-        ]
+        text: 'Xin chào bạn! Tôi là Trợ Lý AI Tìm Việc của JOB SEARCH. Tôi kết nối trực tiếp với cơ sở dữ liệu việc làm thực tế của hệ thống để giúp bạn tìm việc theo: vị trí công việc (job_title), mức lương (salary), địa điểm (address) và hình thức (job_type).\n\nBạn đang quan tâm đến vị trí hoặc khu vực làm việc nào dưới đây ạ?',
+        quickReplies: initialQuickReplies
     };
 
     function initChat() {
@@ -341,18 +355,23 @@ document.addEventListener("DOMContentLoaded", function() {
         chatMessages.innerHTML = '';
         renderMessage('ai', initialGreeting.text, initialGreeting.quickReplies);
 
-        matchedJobsList.innerHTML = `
-            <div class="text-center py-5 text-muted">
-                <div class="rounded-circle bg-light d-inline-flex p-3 mb-2">
-                    <i class="fa-solid fa-clipboard-question fa-2x text-secondary"></i>
+        // Hiển thị danh sách việc làm thực tế ban đầu từ CSDL
+        if (serverInitialJobs && serverInitialJobs.length > 0) {
+            renderJobList(serverInitialJobs, []);
+        } else {
+            matchedJobsList.innerHTML = `
+                <div class="text-center py-5 text-muted">
+                    <div class="rounded-circle bg-light d-inline-flex p-3 mb-2">
+                        <i class="fa-solid fa-clipboard-question fa-2x text-secondary"></i>
+                    </div>
+                    <p class="mb-1 fw-semibold text-dark">Chưa có kết quả gợi ý</p>
+                    <small>Hãy trò chuyện với AI ở khung bên trái để nhận danh sách công việc phù hợp nhé!</small>
                 </div>
-                <p class="mb-1 fw-semibold text-dark">Chưa có kết quả gợi ý</p>
-                <small>Hãy trò chuyện với AI ở khung bên trái để nhận danh sách công việc phù hợp nhé!</small>
-            </div>
-        `;
-        matchedCount.innerText = '0';
-        altJobsPanel.classList.add('d-none');
-        altJobsList.innerHTML = '';
+            `;
+            matchedCount.innerText = '0';
+            altJobsPanel.classList.add('d-none');
+            altJobsList.innerHTML = '';
+        }
     }
 
     function scrollToBottom() {
@@ -467,8 +486,9 @@ document.addEventListener("DOMContentLoaded", function() {
             matchedCount.innerText = matchedJobs.length;
             let html = '';
             matchedJobs.forEach(job => {
+                const jobTitleDisplay = job.job_title || job.title || 'Vị trí công việc';
                 html += `
-                    <div class="card job-card-item rounded-3 p-3 shadow-sm bg-white">
+                    <div class="card job-card-item rounded-3 p-3 shadow-sm bg-white border">
                         <div class="d-flex gap-3 align-items-start">
                             <img src="${job.company_avatar}" alt="${escapeHtml(job.company_name)}" 
                                  class="rounded-3 border flex-shrink-0 object-fit-cover shadow-xs" style="width: 52px; height: 52px;"
@@ -476,8 +496,8 @@ document.addEventListener("DOMContentLoaded", function() {
                             <div class="flex-grow-1 min-w-0">
                                 <div class="d-flex justify-content-between align-items-center gap-2 mb-1">
                                     <h6 class="fw-bold mb-0 text-truncate">
-                                        <a href="${job.detail_url}" target="_blank" class="text-decoration-none text-dark hover-text-danger">
-                                            ${escapeHtml(job.title)}
+                                        <a href="${job.detail_url}" target="_blank" class="text-decoration-none text-dark hover-text-danger" title="${escapeHtml(jobTitleDisplay)}">
+                                            <i class="fa-solid fa-briefcase text-danger me-1"></i>${escapeHtml(jobTitleDisplay)}
                                         </a>
                                     </h6>
                                     <span class="badge bg-success-subtle text-success rounded-pill px-2.5 py-1 fw-bold flex-shrink-0" style="font-size: 11px;">
@@ -487,27 +507,55 @@ document.addEventListener("DOMContentLoaded", function() {
                                 <p class="text-muted mb-2 text-truncate" style="font-size: 13px;">
                                     <i class="fa-solid fa-building me-1 text-secondary"></i>${escapeHtml(job.company_name)}
                                 </p>
-                                <div class="d-flex flex-wrap gap-1.5 mb-2.5">
-                                    <span class="badge bg-danger-subtle text-danger rounded-pill px-2 py-1" style="font-size: 11px;">
-                                        <i class="fa-solid fa-money-bill-wave me-1"></i>${escapeHtml(job.salary)}
-                                    </span>
-                                    <span class="badge bg-secondary-subtle text-secondary rounded-pill px-2 py-1" style="font-size: 11px;">
-                                        <i class="fa-solid fa-location-dot me-1"></i>${escapeHtml(job.address)}
-                                    </span>
-                                    <span class="badge bg-info-subtle text-info rounded-pill px-2 py-1" style="font-size: 11px;">
-                                        <i class="fa-solid fa-clock me-1"></i>${escapeHtml(job.job_type)}
-                                    </span>
+
+                                <!-- 4 tiêu chí rõ ràng từ bảng listings: job_title, salary, address, job_type -->
+                                <div class="row g-2 mb-2.5 py-1">
+                                    <div class="col-6">
+                                        <div class="d-flex align-items-center gap-1.5 p-1.5 rounded bg-light border" style="font-size: 11.5px;">
+                                            <i class="fa-solid fa-money-bill-wave text-success"></i>
+                                            <span class="text-muted">Lương:</span>
+                                            <strong class="text-success text-truncate">${escapeHtml(job.salary)}</strong>
+                                        </div>
+                                    </div>
+                                    <div class="col-6">
+                                        <div class="d-flex align-items-center gap-1.5 p-1.5 rounded bg-light border" style="font-size: 11.5px;">
+                                            <i class="fa-solid fa-location-dot text-danger"></i>
+                                            <span class="text-muted">Địa điểm:</span>
+                                            <strong class="text-dark text-truncate">${escapeHtml(job.address)}</strong>
+                                        </div>
+                                    </div>
+                                    <div class="col-6">
+                                        <div class="d-flex align-items-center gap-1.5 p-1.5 rounded bg-light border" style="font-size: 11.5px;">
+                                            <i class="fa-solid fa-clock text-info"></i>
+                                            <span class="text-muted">Hình thức:</span>
+                                            <strong class="text-dark text-truncate">${escapeHtml(job.job_type)}</strong>
+                                        </div>
+                                    </div>
+                                    <div class="col-6">
+                                        <div class="d-flex align-items-center gap-1.5 p-1.5 rounded bg-light border" style="font-size: 11.5px;">
+                                            <i class="fa-regular fa-calendar-check text-warning"></i>
+                                            <span class="text-muted">Hạn nộp:</span>
+                                            <strong class="text-dark text-truncate">${escapeHtml(job.close_date)}</strong>
+                                        </div>
+                                    </div>
                                 </div>
+
+                                ${job.predes ? `
+                                    <p class="text-secondary small mb-2 line-clamp-2" style="font-size: 12px; line-height: 1.5;">
+                                        ${escapeHtml(job.predes)}
+                                    </p>
+                                ` : ''}
+
                                 <div class="d-flex justify-content-between align-items-center pt-2 border-top">
-                                    <small class="text-muted" style="font-size: 11.5px;">
-                                        <i class="fa-regular fa-calendar-check me-1"></i>Hạn: ${escapeHtml(job.close_date)}
+                                    <small class="text-muted" style="font-size: 11px;">
+                                        ID: #${job.id}
                                     </small>
                                     <div class="d-flex gap-1.5">
                                         <a href="${job.detail_url}" target="_blank" class="btn btn-sm btn-outline-secondary rounded-pill px-2.5 py-1" style="font-size: 12px;">
-                                            Chi tiết
+                                            <i class="fa-solid fa-eye me-1"></i>Chi tiết
                                         </a>
-                                        <a href="${job.detail_url}" target="_blank" class="btn btn-sm btn-danger rounded-pill px-3 py-1 fw-bold shadow-xs" style="font-size: 12px;">
-                                            Ứng tuyển ngay
+                                        <a href="${job.apply_url}" target="_blank" class="btn btn-sm btn-danger rounded-pill px-3 py-1 fw-bold shadow-xs" style="font-size: 12px;">
+                                            <i class="fa-solid fa-paper-plane me-1"></i>Ứng tuyển
                                         </a>
                                     </div>
                                 </div>
@@ -524,16 +572,17 @@ document.addEventListener("DOMContentLoaded", function() {
             altJobsPanel.classList.remove('d-none');
             let altHtml = '';
             alternativeJobs.forEach(job => {
+                const altTitle = job.job_title || job.title || 'Vị trí công việc';
                 altHtml += `
                     <div class="p-2.5 rounded-3 border bg-light d-flex justify-content-between align-items-center gap-2">
                         <div class="min-w-0">
                             <h6 class="fw-semibold mb-0 text-truncate" style="font-size: 13.5px;">
-                                <a href="${job.detail_url}" target="_blank" class="text-decoration-none text-dark">
-                                    ${escapeHtml(job.title)}
+                                <a href="${job.detail_url}" target="_blank" class="text-decoration-none text-dark hover-text-danger">
+                                    <i class="fa-solid fa-briefcase text-secondary me-1"></i>${escapeHtml(altTitle)}
                                 </a>
                             </h6>
                             <small class="text-muted text-truncate d-block" style="font-size: 11.5px;">
-                                ${escapeHtml(job.company_name)} • ${escapeHtml(job.address)} • <strong class="text-success">${escapeHtml(job.salary)}</strong>
+                                ${escapeHtml(job.company_name)} • <i class="fa-solid fa-location-dot"></i> ${escapeHtml(job.address)} • <strong class="text-success">${escapeHtml(job.salary)}</strong> • ${escapeHtml(job.job_type)}
                             </small>
                         </div>
                         <a href="${job.detail_url}" target="_blank" class="btn btn-sm btn-outline-danger rounded-pill px-2.5 py-1 flex-shrink-0" style="font-size: 11.5px;">
@@ -543,10 +592,14 @@ document.addEventListener("DOMContentLoaded", function() {
                 `;
             });
             altJobsList.innerHTML = altHtml;
+        } else {
+            altJobsPanel.classList.add('d-none');
         }
     }
 
     async function sendMessage(textToSend) {
+
+
         const text = (textToSend || userInput.value).trim();
         if (!text) return;
 
